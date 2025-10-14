@@ -1,0 +1,112 @@
+// =========================
+// USER INPUTS - EDIT THESE
+// =========================
+var tableAsset = "users/your_username/UTCI"; // your uploaded CSV asset
+var year = 2024;
+var scaleMeters = 5000; // resolution for extraction (increase to reduce compute)
+var outPrefix = 'UTCI_Inputs_' + year + '_Month_';
+
+// =========================
+// LOAD POINTS
+// =========================
+var points = ee.FeatureCollection(tableAsset);
+
+// =========================
+// ERA5-LAND HOURLY COLLECTION
+// =========================
+var startYearDate = ee.Date.fromYMD(year, 1, 1);
+var endYearDate = startYearDate.advance(1, 'year');
+
+var era5 = ee.ImageCollection("ECMWF/ERA5_LAND/HOURLY")
+  .filterDate(startYearDate, endYearDate)
+  // core variables
+  .select([
+    'temperature_2m',               // K
+    'dewpoint_temperature_2m',      // K
+    'u_component_of_wind_10m',      // m/s
+    'v_component_of_wind_10m'       // m/s
+    // radiation channels may or may not be present in this asset name;
+    // if available, you can also add:
+    // 'surface_downwelling_shortwave_flux_in_air',
+    // 'surface_downwelling_longwave_flux_in_air'
+  ]);
+
+// =========================
+// Helper: build list of days in a month
+// =========================
+function daysInMonth(yearInt, monthInt) {
+  var start = ee.Date.fromYMD(yearInt, monthInt, 1);
+  var next = start.advance(1, 'month');
+  var dayCount = next.difference(start, 'day');
+  return ee.List.sequence(0, dayCount.subtract(1));
+}
+
+// =========================
+// Compute daily mean image for given day date
+// Note: returns image with bands: t2m_c, d2m_c, ws, (optional sw_down, lw_down)
+// =========================
+function dailyImageForDate(dayDate) {
+  dayDate = ee.Date(dayDate);
+  var dayEnd = dayDate.advance(1, 'day');
+  var img = era5.filterDate(dayDate, dayEnd).mean();
+
+  // Convert K -> °C for temperatures (more convenient downstream)
+  var t2m = img.select('temperature_2m').subtract(273.15).rename('t2m');
+  var d2m = img.select('dewpoint_temperature_2m').subtract(273.15).rename('d2m');
+
+  // wind speed
+  var ws = img.select('u_component_of_wind_10m')
+              .hypot(img.select('v_component_of_wind_10m'))
+              .rename('ws');
+
+  var out = ee.Image.cat([t2m, d2m, ws]).set('date', dayDate.format('YYYY-MM-dd'));
+  return out;
+}
+
+//========================
+// Loop months, create multiband image per month with daily bands, extract for all points
+// =========================
+var months = ee.List.sequence(1, 12);
+
+months.evaluate(function(monthList) {
+  // We run a client-side loop over months (safe)
+  monthList.forEach(function(m) {
+    var monthStart = ee.Date.fromYMD(year, m, 1);
+    var dayList = daysInMonth(year, m);
+
+    // Create list of daily images for this month
+    var dailyImgs = ee.ImageCollection(dayList.map(function(d) {
+      return dailyImageForDate(monthStart.advance(d, 'day'));
+    }));
+
+    // Assemble a single multiband image for this month
+    var bandList = dailyImgs.toList(dailyImgs.size());
+    var assembled = ee.Image.constant(0).rename('dummy').select([]); // empty
+
+    // Use server-side iteration instead of .getInfo()
+    var assembled = ee.Image(
+      ee.List.sequence(0, ee.Number(dailyImgs.size()).subtract(1)).iterate(function(i, current) {
+        var img = ee.Image(bandList.get(i));
+        var date = ee.String(img.get('date'));
+        var t = img.select('t2m').rename(ee.String('t2m_').cat(date));
+        var d = img.select('d2m').rename(ee.String('d2m_').cat(date));
+        var w = img.select('ws').rename(ee.String('ws_').cat(date));
+        return ee.Image(current).addBands(ee.Image.cat([t, d, w]));
+      }, assembled)
+    );
+
+    // Reduce over your points
+    var results = assembled.reduceRegions({
+      collection: points,
+      reducer: ee.Reducer.mean(),
+      scale: scaleMeters
+    });
+
+    // Export to Drive
+    Export.table.toDrive({
+      collection: results,
+      description: outPrefix + m,
+      fileFormat: 'CSV'
+    });
+  });
+});
