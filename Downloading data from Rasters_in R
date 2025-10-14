@@ -1,0 +1,1977 @@
+library(terra)
+
+# 1. Define the folder where the shapefiles are stored
+shp_folder <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain/"
+
+# 2. List all .shp files for the years 2011 to 2023
+shp_files <- list.files(path = shp_folder, pattern = ".*\\.shp$", full.names = TRUE)
+
+# 3. Create an empty list to store each year's data
+all_years_data <- list()
+
+# 4. Loop through each shapefile
+for (file in shp_files) {
+  
+  # Read the shapefile
+  shp <- vect(file)
+  
+  # Extract year from filename (assumes year is in the filename like "_2011", "_2012", etc.)
+  year_match <- regmatches(file, regexpr("20[0-9]{2}", file))
+  year <- ifelse(length(year_match) > 0, year_match, NA)
+  
+  # Extract coordinates
+  coords <- crds(shp)
+  
+  # Get attributes
+  attr_data <- as.data.frame(shp)
+  
+  # Combine
+  shp_df <- cbind(attr_data, lon = coords[,1], lat = coords[,2], year = year)
+  
+  # Add to the list
+  all_years_data[[length(all_years_data) + 1]] <- shp_df
+}
+
+# 5. Combine all years into one data frame
+combined_rainfall_df <- do.call(rbind, all_years_data)
+
+# 6. Export to CSV
+write.csv(combined_rainfall_df,
+          file = "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain/combined_rainfall_2011_2023.csv",
+          row.names = FALSE)
+#LOADING THE DATA
+rainfall_data <- read.csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain/combined_rainfall_2011_2023.csv")
+
+
+#SUMMARIZING DATA
+# View structure
+str(rainfall_data)
+
+# Check unique years and stations
+table(rainfall_data$year)
+unique(rainfall_data$station)
+
+# Check for missing values
+colSums(is.na(rainfall_data))
+
+
+################################################################################
+avg_yearly <- aggregate(rain_mm ~ year, data = rainfall_data, FUN = mean)
+print(avg_yearly)
+
+murehwa_trend <- subset(rainfall_data, station == "Murehwa")
+murehwa_avg <- aggregate(rain_mm ~ year, data = murehwa_trend, FUN = mean)
+
+################################################################################
+                       # RAINFALL_DATA FOR 2024
+                       #########################
+
+library(terra)
+library(readr)
+
+files_2023 <- list.files(
+  "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain",
+  pattern = "^msd_ppt2023\\d{2}\\.bil$",  # matches msd_ppt202301.bil ... msd_ppt202336.bil
+  full.names = TRUE
+)
+
+# 2. Stack rasters
+rain_stack <- terra::rast(files_2023)
+
+# 2. Stack rasters
+rain_stack <- rast(files_2023)
+
+# 3. Compute annual sum (sum across weeks)
+rain_2023 <- sum(rain_stack, na.rm = TRUE)
+
+# 4. Load geolocations (must have lon, lat)
+points <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/geo_2023.csv")
+
+# 5. Convert to vector
+pts <- vect(points, geom = c("longitude", "latitude"), crs = crs(rain_2023))
+
+# 6. Extract rainfall
+rain_values <- extract(rain_2023, pts)
+
+# 7. Combine with coordinates
+output <- cbind(points, rainfall_2023 = rain_values[,2])
+
+# 8. Save
+write_csv(output, "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/geolocations_with_rainfall_2023.csv")
+
+head(output)
+
+###################################################################################
+    # COMBINED_MONTHLY & YEARLY TOTAL SUMS
+###################################################################################
+
+library(terra)
+library(readr)
+library(dplyr)
+
+# 1. List weekly files
+files_2023 <- list.files(
+  "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain",
+  pattern = "^msd_ppt2023\\d{2}\\.bil$",  
+  full.names = TRUE
+)
+
+# 2. Stack weekly rasters
+rain_stack <- rast(files_2023)
+
+# 3. Define weeks to months mapping (36 weeks → 12 months, 3 weeks per month)
+month_indices <- split(1:36, rep(1:12, each = 3, length.out = 36))
+
+# 4. Compute monthly sums
+monthly_stack <- rast(lapply(month_indices, function(idx) sum(rain_stack[[idx]], na.rm = TRUE)))
+names(monthly_stack) <- paste0("month", sprintf("%02d", 1:nlyr(monthly_stack)))
+
+# 5. Compute annual sum
+annual_rain <- sum(rain_stack, na.rm = TRUE)
+
+# 6. Load geolocations
+points <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/geo_2023.csv")
+
+# 7. Convert to SpatVector
+pts <- vect(points, geom = c("longitude", "latitude"), crs = crs(rain_stack))
+
+# 8. Extract monthly values
+monthly_values <- extract(monthly_stack, pts)[,-1]  # drop ID column
+colnames(monthly_values) <- names(monthly_stack)
+
+# 9. Extract annual value
+annual_value <- extract(annual_rain, pts)[,2]
+
+# 10. Combine coordinates, monthly and annual
+output_ma <- cbind(points, monthly_values, annual = annual_value)
+
+# 11. Save CSV
+write_csv(output_ma, "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/geolocations_monthly_yearly_rainfall_2023.csv")
+
+# Quick check
+head(output_ma)
+
+#################################################################################
+             #AUTOMATION OF COMBINED GEOCOORDINATES (2019-2023)
+             ##################################################
+library(terra)
+library(readr)
+library(dplyr)
+
+process_rainfall_year <- function(year, geo_file, output_file) {
+  # 1. List weekly files
+  files <- list.files(
+    "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain",
+    pattern = paste0("^msd_ppt", year, "\\d{2}\\.bil$"),
+    full.names = TRUE
+  )
+  
+  if (length(files) == 0) {
+    stop(paste("No rainfall files found for year", year))
+  }
+  
+  # 2. Extract week numbers
+  weeks <- as.integer(sub(paste0(".*", year, "(\\d{2})\\.bil"), "\\1", basename(files)))
+  
+  # 3. Check for missing weeks
+  expected_weeks <- 1:36
+  missing_weeks <- setdiff(expected_weeks, weeks)
+  if (length(missing_weeks) > 0) {
+    warning(paste("Year", year, "is missing weeks:", paste(missing_weeks, collapse = ", ")))
+  }
+  
+  # 4. Stack rasters in correct order
+  rain_stack <- rast(files[order(weeks)])
+  weeks <- sort(weeks)
+  
+  # 5. Map weeks → months (1–3 = Jan, …, 34–36 = Dec)
+  months <- ceiling(weeks / 3)
+  
+  # 6. Compute monthly sums (always 12 layers)
+  monthly_list <- lapply(1:12, function(m) {
+    idx <- which(months == m)
+    if (length(idx) == 0) {
+      # month completely missing → return empty raster
+      return(rain_stack[[1]] * 0)
+    } else {
+      return(sum(rain_stack[[idx]], na.rm = TRUE))
+    }
+  })
+  monthly_stack <- rast(monthly_list)
+  names(monthly_stack) <- paste0("month", sprintf("%02d", 1:12))
+  
+  # 7. Compute annual sum
+  annual_rain <- sum(rain_stack, na.rm = TRUE)
+  
+  # 8. Load geolocations
+  points <- read_csv(geo_file, show_col_types = FALSE) %>%
+    filter(longitude != 0, latitude != 0)
+  
+  # 9. Convert to SpatVector
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = crs(rain_stack))
+  
+  # 10. Extract monthly values
+  monthly_values <- extract(monthly_stack, pts)[,-1]
+  colnames(monthly_values) <- names(monthly_stack)
+  
+  # 11. Extract annual value
+  annual_value <- extract(annual_rain, pts)[,2]
+  
+  # 12. Combine and save
+  output_2022_ <- cbind(points, monthly_values, annual = annual_value)
+  output$year <- year
+  
+  write_csv(output_2022_, output_file)
+  
+  message("Finished processing year ", year, 
+          " → saved to ", output_file)
+  return(output_2022_)
+}
+
+# Example: run for 2022
+output_2022_ <- process_rainfall_year(
+  year = 2022,
+  geo_file = "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/geo_2022_rla.csv",
+  output_file = "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/geolocations_monthly_yearly_rainfall_20222.csv"
+)
+
+##################################################################################################
+                                           2021
+                      ##################################################
+library(terra)
+library(readr)
+library(dplyr)
+
+process_rainfall_year <- function(year, geo_file, output_file) {
+  # 1. List weekly files
+  files <- list.files(
+    "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/MSD_rain",
+    pattern = paste0("^msd_ppt", year, "\\d{2}\\.bil$"),
+    full.names = TRUE
+  )
+  
+  if (length(files) == 0) {
+    stop(paste("No rainfall files found for year", year))
+  }
+  
+  # 2. Extract week numbers
+  weeks <- as.integer(sub(paste0(".*", year, "(\\d{2})\\.bil"), "\\1", basename(files)))
+  
+  # 3. Check for missing weeks
+  expected_weeks <- 1:36
+  missing_weeks <- setdiff(expected_weeks, weeks)
+  if (length(missing_weeks) > 0) {
+    warning(paste("Year", year, "is missing weeks:", paste(missing_weeks, collapse = ", ")))
+  }
+  
+  # 4. Stack rasters in correct order
+  rain_stack <- rast(files[order(weeks)])
+  weeks <- sort(weeks)
+  
+  # 5. Map weeks → months (1–3 = Jan, …, 34–36 = Dec)
+  months <- ceiling(weeks / 3)
+  
+  # 6. Compute monthly sums (always 12 layers)
+  monthly_list <- lapply(1:12, function(m) {
+    idx <- which(months == m)
+    if (length(idx) == 0) {
+      # month completely missing → return empty raster
+      return(rain_stack[[1]] * 0)
+    } else {
+      return(sum(rain_stack[[idx]], na.rm = TRUE))
+    }
+  })
+  monthly_stack <- rast(monthly_list)
+  names(monthly_stack) <- paste0("month", sprintf("%02d", 1:12))
+  
+  # 7. Compute annual sum
+  annual_rain <- sum(rain_stack, na.rm = TRUE)
+  
+  # 8. Load geolocations
+  points <- read_csv(geo_file, show_col_types = FALSE) %>%
+    filter(longitude != 0, latitude != 0)
+  
+  # 9. Convert to SpatVector
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = crs(rain_stack))
+  
+  # 10. Extract monthly values
+  monthly_values <- extract(monthly_stack, pts)[,-1]
+  colnames(monthly_values) <- names(monthly_stack)
+  
+  # 11. Extract annual value
+  annual_value <- extract(annual_rain, pts)[,2]
+  
+  # 12. Combine and save
+  output_2023 <- cbind(points, monthly_values, annual = annual_value)
+  output_2023$year <- year
+  
+  write_csv(output_2023, output_file)
+  
+  message("Finished processing year ", year, 
+          " → saved to ", output_file)
+  return(output_2023)
+}
+
+# Example: run for 2023
+output_2023 <- process_rainfall_year(
+  year = 2023,
+  geo_file = "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/ULA/geo_2023_ula.csv",
+  output_file = "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/rainfall_downloaded/rainfall_2023_ula.csv"
+)
+
+#################################################################################################
+library(terra)
+r <- rast("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (min)/2m tmin 20110101.nc")
+time(r)[1:20]
+#################################################################################################
+#################################################################################################
+
+
+###############################################################################################
+                 #1st_script
+###############################################################################################
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (min)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # 2. Load geolocations for this year
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points (longitude = x, latitude = y)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    r <- rast(f)
+    
+    # Use terra::extract explicitly
+    vals <- terra::extract(r, pts)[, -1]
+    
+    # Get date from filename (assumes YYYYMMDD in name)
+    date_str <- gsub(".*(\\d{8}).nc$", "\\1", f)
+    date_val <- ymd(date_str)
+    
+    tibble(
+      longitude = points$longitude,
+      latitude  = points$latitude,
+      date      = date_val,
+      temperature_c = vals[[1]] - 273.15   # Kelvin → Celsius
+    )
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = c(longitude, latitude),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean   # <- resolves duplicates by averaging
+    )
+  
+  # 6. Monthly means & medians (wide format)
+  monthly_temp <- output_long %>%
+    group_by(longitude, latitude, year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    unite("month_label", year, month, sep = "-") %>%
+    pivot_wider(
+      id_cols = c(longitude, latitude),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians (wide format)
+  yearly_temp <- output_long %>%
+    group_by(longitude, latitude, year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = c(longitude, latitude),
+      names_from = year,
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together: daily + monthly + yearly
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = c("longitude", "latitude")) %>%
+    left_join(yearly_temp, by = c("longitude", "latitude"))
+  
+  # 9. Save one combined file per year
+  write_csv(final_out, file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv")))
+  
+  message("Finished year: ", yr)
+}
+
+###################################################################################################333######
+                             ###2nd
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (min)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # 2. Load geolocations for this year (all variables preserved)
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points (longitude = x, latitude = y)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    r <- rast(f)
+    
+    # Use terra::extract explicitly
+    vals <- terra::extract(r, pts)[, -1]
+    
+    # Get date from filename (assumes YYYYMMDD in name)
+    date_str <- gsub(".*(\\d{8}).nc$", "\\1", f)
+    date_val <- ymd(date_str)
+    
+    # Combine all variables from points + extracted temperature
+    points %>%
+      mutate(date = date_val,
+             temperature_c = vals[[1]] - 273.15)
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Identify columns to keep as IDs (everything except `date` and `temperature_c`)
+  id_cols <- setdiff(names(points), c("date", "temperature_c"))
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean   # resolves duplicates by averaging
+    )
+  
+  # 6. Monthly means & medians (wide format)
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    unite("month_label", year, month, sep = "-") %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians (wide format)
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together: daily + monthly + yearly
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save one combined file per year
+  write_csv(final_out, file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv")))
+  
+  message("Finished year: ", yr)
+}
+########################################################################################################
+     #bilinear interpolation
+########################################################################################################
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (min)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # 2. Load geolocations for this year (all variables preserved)
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points (longitude = x, latitude = y)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file (bilinear interpolation)
+  process_file <- function(f) {
+    r <- rast(f)
+    
+    # Extract with bilinear interpolation
+    vals <- terra::extract(r, pts, method = "bilinear")[, -1]
+    
+    # Get date from filename (assumes YYYYMMDD in name)
+    date_val <- ymd(gsub(".*(\\d{8}).nc$", "\\1", f))
+    
+    # Bind values to points
+    tibble(points,
+           date = date_val,
+           temperature_c = vals - 273.15)
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Identify columns to keep as IDs (everything from geo file)
+  id_cols <- names(points)
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean   # resolves duplicates if any
+    )
+  
+  # 6. Monthly means & medians (wide format)
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    unite("month_label", year, month, sep = "-") %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians (wide format)
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together: daily + monthly + yearly
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save one combined file per year
+  write_csv(final_out, file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv")))
+  
+  message("Finished year: ", yr)
+}
+##################################################################################################
+                 ##Maximum Temperatures
+##################################################################################################
+
+###2nd
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (max)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data_max"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # 2. Load geolocations for this year (all variables preserved)
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points (longitude = x, latitude = y)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    r <- rast(f)
+    
+    # Use terra::extract explicitly
+    vals <- terra::extract(r, pts)[, -1]
+    
+    # Get date from filename (assumes YYYYMMDD in name)
+    date_str <- gsub(".*(\\d{8}).nc$", "\\1", f)
+    date_val <- ymd(date_str)
+    
+    # Combine all variables from points + extracted temperature
+    points %>%
+      mutate(date = date_val,
+             temperature_c = vals[[1]] - 273.15)
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Identify columns to keep as IDs (everything except `date` and `temperature_c`)
+  id_cols <- setdiff(names(points), c("date", "temperature_c"))
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean   # resolves duplicates by averaging
+    )
+  
+  # 6. Monthly means & medians (wide format)
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    unite("month_label", year, month, sep = "-") %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians (wide format)
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together: daily + monthly + yearly
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save one combined file per year
+  write_csv(final_out, file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv")))
+  
+  message("Finished year: ", yr)
+}
+#################################################################################################
+                   #Max temp_perfect
+#################################################################################################
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (max)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data_max"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+# Process each year
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # Check if files exist for this year
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  # 2. Load geolocations for this year
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract values
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      # Get date from filename
+      date_str <- gsub(".*(\\d{8}).*$", "\\1", basename(f))
+      date_val <- ymd(date_str)
+      
+      if (is.na(date_val)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      # Combine data
+      result <- points %>%
+        mutate(date = date_val,
+               temperature_c = vals[[1]] - 273.15)
+      
+      return(result)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Check if any data was processed
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  # Identify ID columns
+  id_cols <- setdiff(names(points), c("date", "temperature_c"))
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean
+    )
+  
+  # 6. Monthly means & medians
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save output
+  out_file <- file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+message("All years processed successfully!")
+
+#############################################################################################
+                        #Bilinear interpolation_MAX
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (max)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/D_data_bi_max"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # 2. Load geolocations for this year (all variables preserved)
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points (longitude = x, latitude = y)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file (bilinear interpolation)
+  process_file <- function(f) {
+    r <- rast(f)
+    
+    # Extract with bilinear interpolation
+    vals <- terra::extract(r, pts, method = "bilinear")[, -1]
+    
+    # Get date from filename (assumes YYYYMMDD in name)
+    date_val <- ymd(gsub(".*(\\d{8}).nc$", "\\1", f))
+    
+    # Bind values to points
+    tibble(points,
+           date = date_val,
+           temperature_c = vals - 273.15)
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Identify columns to keep as IDs (everything from geo file)
+  id_cols <- names(points)
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean   # resolves duplicates if any
+    )
+  
+  # 6. Monthly means & medians (wide format)
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    unite("month_label", year, month, sep = "-") %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians (wide format)
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together: daily + monthly + yearly
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save one combined file per year
+  write_csv(final_out, file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv")))
+  
+  message("Finished year: ", yr)
+}
+
+#####################################################################################################
+              #2m relative humidity
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/humidity/2m relative humidity"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/humidity_dwnload"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+# Process each year
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year - MODIFIED PATTERN
+  # Look for files containing the year anywhere in the filename
+  files_year <- list.files(data_dir, pattern = paste0(".*", yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # Alternative: list all .nc files and filter by year
+  if (length(files_year) == 0) {
+    all_nc_files <- list.files(data_dir, pattern = "\\.nc$", full.names = TRUE)
+    files_year <- all_nc_files[grepl(as.character(yr), all_nc_files)]
+  }
+  
+  # Check if files exist for this year
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  message("Found ", length(files_year), " files for year ", yr)
+  
+  # 2. Load geolocations for this year
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract values
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      # Get date from filename - MODIFIED FOR DIFFERENT FILENAME PATTERNS
+      # Try multiple patterns to extract date
+      date_str <- NA
+      
+      # Pattern 1: YYYYMMDD anywhere in filename
+      if (is.na(date_str)) {
+        date_match <- gregexpr("\\d{8}", basename(f))
+        if (date_match[[1]][1] != -1) {
+          date_str <- regmatches(basename(f), date_match)[[1]][1]
+        }
+      }
+      
+      # Pattern 2: Look for date-like patterns with other separators
+      if (is.na(date_str)) {
+        date_match <- gregexpr("\\d{4}[_-]?\\d{2}[_-]?\\d{2}", basename(f))
+        if (date_match[[1]][1] != -1) {
+          potential_date <- regmatches(basename(f), date_match)[[1]][1]
+          date_str <- gsub("[_-]", "", potential_date) # Remove separators
+        }
+      }
+      
+      if (is.na(date_str)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      date_val <- ymd(date_str)
+      
+      if (is.na(date_val)) {
+        warning("Could not convert to date: ", date_str, " from file: ", f)
+        return(NULL)
+      }
+      
+      # Combine data - MODIFIED FOR RELATIVE HUMIDITY (no conversion needed)
+      result <- points %>%
+        mutate(date = date_val,
+               relative_humidity = vals[[1]])  # Relative humidity is already in percentage
+      
+      return(result)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Check if any data was processed
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  # Identify ID columns - MODIFIED FOR HUMIDITY
+  id_cols <- setdiff(names(points), c("date", "relative_humidity"))
+  
+  # 5. Daily wide format - MODIFIED FOR HUMIDITY
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = relative_humidity,
+      values_fn = mean
+    )
+  
+  # 6. Monthly means & medians - MODIFIED FOR HUMIDITY
+  monthly_humidity <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_rh = mean(relative_humidity, na.rm = TRUE),
+      median_monthly_rh = median(relative_humidity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_rh, median_monthly_rh)
+    )
+  
+  # 7. Yearly means & medians - MODIFIED FOR HUMIDITY
+  yearly_humidity <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_rh = mean(relative_humidity, na.rm = TRUE),
+      median_yearly_rh = median(relative_humidity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_rh, median_yearly_rh)
+    )
+  
+  # 8. Merge all together - MODIFIED FOR HUMIDITY
+  final_out <- output_wide %>%
+    left_join(monthly_humidity, by = id_cols) %>%
+    left_join(yearly_humidity, by = id_cols)
+  
+  # 9. Save output - MODIFIED FILENAME
+  out_file <- file.path(out_dir, paste0("relative_humidity_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+message("All years processed successfully!")
+
+#################################################################################################
+                     #Wind
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directories
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Wind/10m wind speed"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/wind_download"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  # 2. Load geolocations
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract wind speed directly
+      if (!"Wind_Speed_10m_Mean_24h" %in% names(r)) {
+        warning("Skipping file, variable missing: ", f)
+        return(NULL)
+      }
+      
+      vals <- terra::extract(r[["Wind_Speed_10m_Mean_24h"]], pts, method = "bilinear")[, -1, drop = FALSE]
+      wind_ms <- vals[[1]]
+      
+      # Extract date from filename (assumes YYYYMMDD)
+      date_str <- gsub(".*(\\d{8}).*$", "\\1", basename(f))
+      date_val <- ymd(date_str)
+      if (is.na(date_val)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      points %>% mutate(date = date_val, wind_ms = wind_ms)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files
+  output_long <- map_dfr(files_year, process_file)
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  id_cols <- names(points)
+  
+  # 5. Daily wide
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = wind_ms,
+      values_fn = mean
+    )
+  
+  # 6. Monthly
+  monthly_wind <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_wind_ms = mean(wind_ms, na.rm = TRUE),
+      median_monthly_wind_ms = median(wind_ms, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_wind_ms, median_monthly_wind_ms)
+    )
+  
+  # 7. Yearly
+  yearly_wind <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_wind_ms = mean(wind_ms, na.rm = TRUE),
+      median_yearly_wind_ms = median(wind_ms, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_wind_ms, median_yearly_wind_ms)
+    )
+  
+  # 8. Merge all
+  final_out <- output_wide %>%
+    left_join(monthly_wind, by = id_cols) %>%
+    left_join(yearly_wind, by = id_cols)
+  
+  # 9. Save
+  out_file <- file.path(out_dir, paste0("wind_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+
+##################################################################################################
+                                     #Temp_ _ULA__MIN
+##################################################################################################
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Temp/2m temperature (max)"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/ULA"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/temp_data_ula_max"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+# Process each year
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # Check if files exist for this year
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  # 2. Load geolocations for this year
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_ula.csv"))
+  
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract values
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      # Get date from filename
+      date_str <- gsub(".*(\\d{8}).*$", "\\1", basename(f))
+      date_val <- ymd(date_str)
+      
+      if (is.na(date_val)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      # Combine data
+      result <- points %>%
+        mutate(date = date_val,
+               temperature_c = vals[[1]] - 273.15)
+      
+      return(result)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Check if any data was processed
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  # Identify ID columns
+  id_cols <- setdiff(names(points), c("date", "temperature_c"))
+  
+  # 5. Daily wide format
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = temperature_c,
+      values_fn = mean
+    )
+  
+  # 6. Monthly means & medians
+  monthly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_monthly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_temp_c, median_monthly_temp_c)
+    )
+  
+  # 7. Yearly means & medians
+  yearly_temp <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_temp_c = mean(temperature_c, na.rm = TRUE),
+      median_yearly_temp_c = median(temperature_c, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_temp_c, median_yearly_temp_c)
+    )
+  
+  # 8. Merge all together
+  final_out <- output_wide %>%
+    left_join(monthly_temp, by = id_cols) %>%
+    left_join(yearly_temp, by = id_cols)
+  
+  # 9. Save output
+  out_file <- file.path(out_dir, paste0("temperature_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+message("All years processed successfully!")
+
+###############################################################################################
+                                   #HUMIDITY_ULA
+
+#2m relative humidity
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directory with NetCDF files
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/humidity/2m relative humidity"
+
+# Directory with geolocation CSVs
+geo_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/ULA"
+
+# Output directory
+out_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/humidity_ula"
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+# Process each year
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files for this year - MODIFIED PATTERN
+  # Look for files containing the year anywhere in the filename
+  files_year <- list.files(data_dir, pattern = paste0(".*", yr, ".*\\.nc$"), full.names = TRUE)
+  
+  # Alternative: list all .nc files and filter by year
+  if (length(files_year) == 0) {
+    all_nc_files <- list.files(data_dir, pattern = "\\.nc$", full.names = TRUE)
+    files_year <- all_nc_files[grepl(as.character(yr), all_nc_files)]
+  }
+  
+  # Check if files exist for this year
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  message("Found ", length(files_year), " files for year ", yr)
+  
+  # 2. Load geolocations for this year
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_ula.csv"))
+  
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  # Create spatial points
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract values
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      # Get date from filename - MODIFIED FOR DIFFERENT FILENAME PATTERNS
+      # Try multiple patterns to extract date
+      date_str <- NA
+      
+      # Pattern 1: YYYYMMDD anywhere in filename
+      if (is.na(date_str)) {
+        date_match <- gregexpr("\\d{8}", basename(f))
+        if (date_match[[1]][1] != -1) {
+          date_str <- regmatches(basename(f), date_match)[[1]][1]
+        }
+      }
+      
+      # Pattern 2: Look for date-like patterns with other separators
+      if (is.na(date_str)) {
+        date_match <- gregexpr("\\d{4}[_-]?\\d{2}[_-]?\\d{2}", basename(f))
+        if (date_match[[1]][1] != -1) {
+          potential_date <- regmatches(basename(f), date_match)[[1]][1]
+          date_str <- gsub("[_-]", "", potential_date) # Remove separators
+        }
+      }
+      
+      if (is.na(date_str)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      date_val <- ymd(date_str)
+      
+      if (is.na(date_val)) {
+        warning("Could not convert to date: ", date_str, " from file: ", f)
+        return(NULL)
+      }
+      
+      # Combine data - MODIFIED FOR RELATIVE HUMIDITY (no conversion needed)
+      result <- points %>%
+        mutate(date = date_val,
+               relative_humidity = vals[[1]])  # Relative humidity is already in percentage
+      
+      return(result)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files for the year
+  output_long <- map_dfr(files_year, process_file)
+  
+  # Check if any data was processed
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  # Identify ID columns - MODIFIED FOR HUMIDITY
+  id_cols <- setdiff(names(points), c("date", "relative_humidity"))
+  
+  # 5. Daily wide format - MODIFIED FOR HUMIDITY
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = relative_humidity,
+      values_fn = mean
+    )
+  
+  # 6. Monthly means & medians - MODIFIED FOR HUMIDITY
+  monthly_humidity <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_rh = mean(relative_humidity, na.rm = TRUE),
+      median_monthly_rh = median(relative_humidity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_rh, median_monthly_rh)
+    )
+  
+  # 7. Yearly means & medians - MODIFIED FOR HUMIDITY
+  yearly_humidity <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_rh = mean(relative_humidity, na.rm = TRUE),
+      median_yearly_rh = median(relative_humidity, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_rh, median_yearly_rh)
+    )
+  
+  # 8. Merge all together - MODIFIED FOR HUMIDITY
+  final_out <- output_wide %>%
+    left_join(monthly_humidity, by = id_cols) %>%
+    left_join(yearly_humidity, by = id_cols)
+  
+  # 9. Save output - MODIFIED FILENAME
+  out_file <- file.path(out_dir, paste0("relative_humidity_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+message("All years processed successfully!")
+
+##################################################################################################
+                               #WIND_ULA
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# Directories
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/Wind/10m wind speed"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add/ULA"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/wind_ula"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List daily NetCDF files
+  files_year <- list.files(data_dir, pattern = paste0(yr, ".*\\.nc$"), full.names = TRUE)
+  if (length(files_year) == 0) {
+    message("No NetCDF files found for year: ", yr)
+    next
+  }
+  
+  # 2. Load geolocations
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_ula.csv"))
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 3. Function to process one daily file
+  process_file <- function(f) {
+    tryCatch({
+      r <- rast(f)
+      
+      # Extract wind speed directly
+      if (!"Wind_Speed_10m_Mean_24h" %in% names(r)) {
+        warning("Skipping file, variable missing: ", f)
+        return(NULL)
+      }
+      
+      vals <- terra::extract(r[["Wind_Speed_10m_Mean_24h"]], pts, method = "bilinear")[, -1, drop = FALSE]
+      wind_ms <- vals[[1]]
+      
+      # Extract date from filename (assumes YYYYMMDD)
+      date_str <- gsub(".*(\\d{8}).*$", "\\1", basename(f))
+      date_val <- ymd(date_str)
+      if (is.na(date_val)) {
+        warning("Could not parse date from filename: ", f)
+        return(NULL)
+      }
+      
+      points %>% mutate(date = date_val, wind_ms = wind_ms)
+      
+    }, error = function(e) {
+      warning("Error processing file: ", f, " - ", e$message)
+      return(NULL)
+    })
+  }
+  
+  # 4. Process all files
+  output_long <- map_dfr(files_year, process_file)
+  if (is.null(output_long) || nrow(output_long) == 0) {
+    message("No data processed for year: ", yr)
+    next
+  }
+  
+  id_cols <- names(points)
+  
+  # 5. Daily wide
+  output_wide <- output_long %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = wind_ms,
+      values_fn = mean
+    )
+  
+  # 6. Monthly
+  monthly_wind <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date), month = month(date)) %>%
+    summarise(
+      mean_monthly_wind_ms = mean(wind_ms, na.rm = TRUE),
+      median_monthly_wind_ms = median(wind_ms, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(month_label = paste(year, sprintf("%02d", month), sep = "-")) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = month_label,
+      values_from = c(mean_monthly_wind_ms, median_monthly_wind_ms)
+    )
+  
+  # 7. Yearly
+  yearly_wind <- output_long %>%
+    group_by(across(all_of(id_cols)), year = year(date)) %>%
+    summarise(
+      mean_yearly_wind_ms = mean(wind_ms, na.rm = TRUE),
+      median_yearly_wind_ms = median(wind_ms, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = year,
+      names_prefix = "year_",
+      values_from = c(mean_yearly_wind_ms, median_yearly_wind_ms)
+    )
+  
+  # 8. Merge all
+  final_out <- output_wide %>%
+    left_join(monthly_wind, by = id_cols) %>%
+    left_join(yearly_wind, by = id_cols)
+  
+  # 9. Save
+  out_file <- file.path(out_dir, paste0("wind_", yr, "_daily_monthly_yearly.csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+
+
+#########################################################################################################
+                         ####RAINFALL_ULA
+#######################################################################################
+
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+
+# Directories
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/MSD_rain"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/rain_data_ula"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List weekly rainfall files
+  files_year <- list.files(
+    data_dir,
+    pattern = paste0("^msd_ppt", yr, "\\d{2}\\.bil$"),
+    full.names = TRUE
+  )
+  if (length(files_year) == 0) {
+    message("No rainfall files found for year: ", yr)
+    next
+  }
+  
+  # 2. Extract week numbers
+  weeks <- as.integer(sub(paste0(".*", yr, "(\\d{2})\\.bil"), "\\1", basename(files_year)))
+  ord <- order(weeks)
+  files_year <- files_year[ord]
+  weeks <- weeks[ord]
+  
+  # 3. Load geolocations
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_ula.csv"))
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 4. Stack rainfall rasters
+  rain_stack <- rast(files_year)
+  
+  # 5. Weekly extraction
+  weekly_vals <- terra::extract(rain_stack, pts)[, -1, drop = FALSE]
+  colnames(weekly_vals) <- paste0("week", sprintf("%02d", weeks))
+  weekly_out <- cbind(points, weekly_vals)
+  weekly_out$year <- yr
+  
+  # 6. Monthly sums (weeks grouped into months)
+  months <- ceiling(weeks / 3)
+  monthly_list <- lapply(1:12, function(m) {
+    idx <- which(months == m)
+    if (length(idx) == 0) {
+      rain_stack[[1]] * 0
+    } else {
+      sum(rain_stack[[idx]], na.rm = TRUE)
+    }
+  })
+  monthly_stack <- rast(monthly_list)
+  names(monthly_stack) <- paste0("month", sprintf("%02d", 1:12))
+  
+  monthly_vals <- terra::extract(monthly_stack, pts)[, -1, drop = FALSE]
+  colnames(monthly_vals) <- names(monthly_stack)
+  monthly_out <- cbind(points, monthly_vals)
+  monthly_out$year <- yr
+  
+  # 7. Annual sum
+  annual_rain <- sum(rain_stack, na.rm = TRUE)
+  annual_vals <- terra::extract(annual_rain, pts)[, 2]
+  annual_out <- cbind(points, annual = annual_vals)
+  annual_out$year <- yr
+  
+  # 8. Save outputs
+  write_csv(weekly_out, file.path(out_dir, paste0("rainfall_weekly_", yr, ".csv")))
+  write_csv(monthly_out, file.path(out_dir, paste0("rainfall_monthly_", yr, ".csv")))
+  write_csv(annual_out, file.path(out_dir, paste0("rainfall_annual_", yr, ".csv")))
+  
+  message("Finished year: ", yr)
+}
+
+#########################################################################################################
+                 ############Rainfall combined
+library(terra)
+library(readr)
+library(dplyr)
+library(purrr)
+
+# Directories
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/MSD_rain"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Rainfall_to_add"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data/rain_data_rla"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# Years to process
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # 1. List weekly rainfall files
+  files_year <- list.files(
+    data_dir,
+    pattern = paste0("^msd_ppt", yr, "\\d{2}\\.bil$"),
+    full.names = TRUE
+  )
+  if (length(files_year) == 0) {
+    message("No rainfall files found for year: ", yr)
+    next
+  }
+  
+  # 2. Extract week numbers
+  weeks <- as.integer(sub(paste0(".*", yr, "(\\d{2})\\.bil"), "\\1", basename(files_year)))
+  ord <- order(weeks)
+  files_year <- files_year[ord]
+  weeks <- weeks[ord]
+  
+  # 3. Load geolocations
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  # 4. Stack rainfall rasters
+  rain_stack <- rast(files_year)
+  
+  # 5. Weekly extraction (wide format)
+  weekly_vals <- terra::extract(rain_stack, pts)[, -1, drop = FALSE]
+  colnames(weekly_vals) <- paste0("week", sprintf("%02d", weeks))
+  weekly_out <- cbind(points, weekly_vals)
+  
+  # 6. Monthly sums (weeks grouped into months)
+  months <- ceiling(weeks / 3)
+  monthly_list <- lapply(1:12, function(m) {
+    idx <- which(months == m)
+    if (length(idx) == 0) {
+      rain_stack[[1]] * 0
+    } else {
+      sum(rain_stack[[idx]], na.rm = TRUE)
+    }
+  })
+  monthly_stack <- rast(monthly_list)
+  names(monthly_stack) <- paste0("month", sprintf("%02d", 1:12))
+  
+  monthly_vals <- terra::extract(monthly_stack, pts)[, -1, drop = FALSE]
+  colnames(monthly_vals) <- names(monthly_stack)
+  monthly_out <- cbind(points, monthly_vals)
+  
+  # 7. Annual sum
+  annual_rain <- sum(rain_stack, na.rm = TRUE)
+  annual_vals <- terra::extract(annual_rain, pts)[, 2]
+  annual_out <- cbind(points, annual = annual_vals)
+  
+  # 8. Merge weekly + monthly + annual (wide format)
+  id_cols <- names(points)
+  final_out <- weekly_out %>%
+    left_join(monthly_out, by = id_cols) %>%
+    left_join(annual_out, by = id_cols)
+  
+  final_out$year <- yr
+  
+  # 9. Save single file per year
+  out_file <- file.path(out_dir, paste0("rainfall_", yr, ".csv"))
+  write_csv(final_out, out_file)
+  
+  message("Finished year: ", yr, " - Output: ", out_file)
+}
+ 
