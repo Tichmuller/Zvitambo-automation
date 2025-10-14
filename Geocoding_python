@@ -1,0 +1,61 @@
+import pandas as pd
+from geopy.geocoders import Nominatim
+from geopy.extra.rate_limiter import RateLimiter
+import time
+import os
+
+# 1. Read your data from a CSV file
+input_file = "village_geo.csv"
+output_file = "geocoded_villages.csv"
+
+df = pd.read_csv(input_file)
+print(f"Successfully loaded {len(df)} records from {input_file}")
+
+# 2. Initialize the Geocoder
+geolocator = Nominatim(user_agent="my_village_geocoder_zimbabwe")
+
+# Create a rate-limited geocode function
+geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1.0)
+
+# 3. Define a function to get coordinates for a single row
+def get_coordinates(row):
+    """
+    Takes a row of the DataFrame and returns latitude and longitude.
+    """
+    # Construct the query string using YOUR actual column names
+    # Using Zimbabwe as the country since your data appears to be from Zimbabwe
+    query = f"{row['village_name']}, Ward {int(row['ward_number'])}, {row['district']}, {row['province']}, Zimbabwe"
+    
+    try:
+        # Send the query to the geocoding service
+        location = geocode(query)
+        if location:
+            print(f"Found: {query} -> {location.latitude}, {location.longitude}")
+            return pd.Series([location.latitude, location.longitude, location.address])
+        else:
+            print(f"Not found: {query}")
+            return pd.Series([None, None, None])
+    except Exception as e:
+        # Handle any connection or timeout errors
+        print(f"Error with {query}: {e}")
+        return pd.Series([None, None, None])
+
+# 4. Apply the function to each row in the DataFrame
+print("Starting geocoding process. This will take a while...")
+print(f"Estimated time: ~{len(df)//60} minutes and {len(df)%60} seconds")
+print("Press Ctrl+C to stop and save progress if needed\n")
+
+df[['Latitude', 'Longitude', 'Full_Address']] = df.apply(get_coordinates, axis=1)
+
+# 5. Save the results to a new CSV file
+df.to_csv(output_file, index=False)
+print(f"\nGeocoding complete! Results saved to {output_file}")
+
+# 6. Print a quick summary
+success_count = df['Latitude'].notna().sum()
+print(f"Successfully geocoded {success_count} out of {len(df)} villages.")
+print(f"Success rate: {(success_count/len(df)*100):.1f}%")
+
+# Show a preview of the results
+print("\nPreview of results:")
+print(df[['village_name', 'ward_number', 'district', 'Latitude', 'Longitude']].head(10))
