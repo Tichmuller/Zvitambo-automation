@@ -1,0 +1,53 @@
+// Your FeatureCollection (replace with your actual asset)
+var table = ee.FeatureCollection("projects/ee-tichmuller/assets/da23");
+
+// ERA5-Land daily data
+var dataset = ee.ImageCollection('ECMWF/ERA5_LAND/DAILY_AGGR')
+                .filterDate('2023-01-01', '2023-12-31')
+                .select(['temperature_2m', 'temperature_2m_min', 'temperature_2m_max', 'total_precipitation_min', 'total_precipitation_max', 'u_component_of_wind_10m_min', 'u_component_of_wind_10m_max', 'v_component_of_wind_10m_min', 'v_component_of_wind_10m_max']);
+
+// Function to extract temperature (in °C) at each point from one image
+var extractAtPoints = function(image, table, dateStr) {
+  // Convert Kelvin to Celsius
+  var imageCelsius = image.subtract(273.15)
+                          .rename(['temperature_2m', 'temperature_2m_min', 'temperature_2m_max', 'total_precipitation_min', 'total_precipitation_max', 'u_component_of_wind_10m_min', 'u_component_of_wind_10m_max', 'v_component_of_wind_10m_min', 'v_component_of_wind_10m_max']);
+  
+  var reduced = imageCelsius.reduceRegions({
+    collection: table,
+    reducer: ee.Reducer.mean(),
+    scale: 1000
+  }).map(function(f) {
+    return f.set('date', dateStr);
+  });
+  return reduced;
+};
+
+// Months and days per month for 2023 (non-leap year)
+var months = ee.List.sequence(1, 12);
+
+// Loop through each month
+months.getInfo().forEach(function(month) {
+  var start = ee.Date.fromYMD(2023, month, 1);
+  var end = start.advance(1, 'month');
+  
+  var monthName = start.format('YYYY_MM').getInfo();  // e.g., "2023_01"
+  
+  // Filter monthly image collection
+  var monthlyImages = dataset.filterDate(start, end);
+  
+  // Map over images and extract for all points
+  var monthlyData = monthlyImages.map(function(image) {
+    var dateStr = image.date().format('YYYY-MM-dd');
+    return extractAtPoints(image, table, dateStr);
+  }).flatten();
+  
+  // Export each month's data (in Celsius)
+  Export.table.toDrive({
+    collection: monthlyData,
+    description: 'ERA5_Temp_Celsius_' + monthName,
+    fileFormat: 'CSV',
+    selectors: ['temperature_2m', 'temperature_2m_min', 'temperature_2m_max', 'total_precipitation_min', 'total_precipitation_max', 'u_component_of_wind_10m_min', 'u_component_of_wind_10m_max', 'v_component_of_wind_10m_min', 'v_component_of_wind_10m_max', 'date', 'id'],
+    folder: 'GEE_Exports'
+  });
+});
+
