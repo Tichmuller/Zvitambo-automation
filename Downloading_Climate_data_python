@@ -1,0 +1,86 @@
+# Import Packages
+import datetime
+import os
+import json
+import requests
+import time
+
+!pip install --quiet geopandas
+import pandas as pd
+import geopandas as gpd
+
+import matplotlib.pyplot as plt
+plt.style.use('classic')
+%matplotlib inline
+import numpy as np
+requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
+
+# API Set Up
+# Set root URL for API requests
+root_url = 'https://api.climateengine.org/'
+# Authentication info for the API (INSERT YOUR OWN KEY)
+headers = {'Authorization': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJmcmVzaCI6ZmFsc2UsImlhdCI6MTc0MTYxOTkyMiwianRpIjoiYzRkMGY1NTktNWIxOC00YzYwLWIxZDYtNTY5ZjYwODFhYjI4IiwibmJmIjoxNzQxNjE5OTIyLCJ0eXBlIjoiYWNjZXNzIiwic3ViIjoiQWIzOHdDZVFZOWVCM0UzOUYxQ2l4Q0pSWkJyMSIsImV4cCI6MTc0NjgwMzkyMiwicm9sZXMiOiJ1c2VyIiwidXNlcl9pZCI6IkFiMzh3Q2VRWTllQjNFMzlGMUNpeENKUlpCcjEifQ.nTt0JK1yh9KwPOsnDU6KYw0O5UfJVHDa1Zx362mmmDc'}  # Replace with your actual key
+
+# Define the path
+path = r'C:\Zvitambo\users\Tichaona Mapangisana\Documents\PYTHON_WORK_SPACE'
+
+# Create the directory if it doesn't exist, including parents
+os.makedirs(path, exist_ok=True)
+
+# Change the current working directory
+os.chdir(path)
+print("Current working directory changed to:", os.getcwd())
+
+endpoint1 = 'timeseries/native/coordinates'
+
+# Function to get climate data
+def get_climate_data(variable, start_date, end_date, lat, lon):
+    url = f"{root_url}{endpoint1}"
+    params = {
+        'dataset': 'ERA5_LAND_DAILY',
+        'variable': variable,  # Use function argument instead of hardcoded value
+        'start_date': start_date,  # Remove quotes to reference variables
+        'end_date': end_date,
+        'latitude': lat,
+        'longitude': lon
+    }
+
+    try:
+        response = requests.get(url, params=params, headers=headers, verify=False)
+        response.raise_for_status()  # Raise error for failed requests
+
+        data = response.json()
+        print(f"Data for {variable} retrieved successfully.")
+        return data
+
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching data for {variable}: {e}")
+        return None
+
+# Example usage
+if __name__ == "__main__":
+    variable_list = ['temperature_2m', 'temperature_2m_min', 'temperature_2m_max']  # Only temperature 
+    start_date = '2020-01-01'  # Specify the month start date
+    end_date = '2020-01-31'    # Specify the month end date
+    latitude = 40.71
+    longitude = -74.01
+    
+    climate_data = {var: [] for var in variable_list}
+
+    for variable in variable_list:
+        print(f"Fetching data for {variable}...")
+        data = get_climate_data(variable, start_date, end_date, latitude, longitude)
+        
+        if data and 'values' in data:
+            # Fill missing data with '.'
+            values = data['values']
+            climate_data[variable] = [value if value is not None else '.' for value in values]
+        else:
+            print(f"No data found for {variable} or unexpected structure.")
+
+    if climate_data:
+        df = pd.DataFrame(climate_data)
+        df.to_csv('climate_data.csv', index=False)
+        print("Data saved to climate_data.csv")
+    else:
+        print("No climate data was retrieved; CSV file will not be created.")
