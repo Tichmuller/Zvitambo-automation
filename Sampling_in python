@@ -1,0 +1,52 @@
+import pandas as pd
+import random
+import math
+
+# Load the household list
+df = pd.read_csv('murehwa_under_5.csv')
+
+# Household count per province
+Ward_counts = {
+   'Ward 2': 461,
+   'Ward 10': 449,
+   'Ward 16': 318,
+   'Ward 20': 434,
+   'Ward 26': 292
+}
+
+# Total number of households in all provinces
+total_hh = sum(Ward_counts.values())
+
+# Desired final sample size after non-response adjustment
+target_sample = 300
+non_response_rate = 0.10
+adjusted_sample = math.ceil(target_sample / (1 - non_response_rate))  # 334
+
+# Allocate sample size to each ward proportionally
+Ward_sample_sizes = {}
+for Ward, count in Ward_counts.items():
+    proportion = count / total_hh
+    Ward_sample_sizes[Ward] = round(adjusted_sample * proportion)
+
+# Helper function to do systematic sampling
+def systematic_sample(df_group, sample_size):
+    total = len(df_group)
+    if total < sample_size:
+        return df_group  # return all if sample size exceeds available
+    interval = total // sample_size
+    start = random.randint(0, interval - 1)
+    indices = [start + i * interval for i in range(sample_size) if start + i * interval < total]
+    return df_group.iloc[indices]
+
+# Perform sampling for each province
+sampled_df = pd.DataFrame()
+for Ward, sample_size in Ward_sample_sizes.items():
+    group_df = df[df['Ward'] == Ward].reset_index(drop=True)
+    sample = systematic_sample(group_df, sample_size)
+    sampled_df = pd.concat([sampled_df, sample], ignore_index=True)
+
+# Save the final sample
+sampled_df.to_csv('final_sampled_households_5.csv', index=False)
+
+print(f"Sampled {len(sampled_df)} households across wards.")
+print("Per-ward sample sizes:", Ward_sample_sizes)
