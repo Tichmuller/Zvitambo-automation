@@ -1,0 +1,104 @@
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+# =============================================================================
+# Directories (CONFIRMED)
+# =============================================================================
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/CCN_2/Weather_data/bc daily rainfall"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/CCN_2/Rainfall_to_add"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/Weather_data"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+# =============================================================================
+# Years to process
+# =============================================================================
+years <- 2019:2023
+
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  # ---------------------------------------------------------------------------
+  # 1️⃣ List DAILY rainfall files for the year
+  # ---------------------------------------------------------------------------
+  files_year <- list.files(
+    data_dir,
+    pattern = paste0("^bc_ppt_", yr, "\\d{4}\\.bil$"),
+    full.names = TRUE
+  )
+  
+  if (length(files_year) == 0) {
+    message("No rainfall files found for year: ", yr)
+    next
+  }
+  
+  # Extract dates from filenames
+  dates <- ymd(sub("bc_ppt_(\\d{8})\\.bil", "\\1", basename(files_year)))
+  
+  ord <- order(dates)
+  files_year <- files_year[ord]
+  dates <- dates[ord]
+  
+  # ---------------------------------------------------------------------------
+  # 2️⃣ Load geolocations
+  # ---------------------------------------------------------------------------
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  if (!file.exists(geo_file)) {
+    message("Geolocation file not found: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  
+  pts <- vect(
+    points,
+    geom = c("longitude", "latitude"),
+    crs = "EPSG:4326"
+  )
+  
+  id_cols <- names(points)
+  
+  # ---------------------------------------------------------------------------
+  # 3️⃣ Function to extract one DAILY file
+  # ---------------------------------------------------------------------------
+  process_file <- function(f, d) {
+    r <- rast(f)
+    
+    vals <- terra::extract(r, pts)[, 2]
+    
+    points %>%
+      mutate(
+        date = d,
+        rainfall_mm = vals
+      )
+  }
+  
+  # ---------------------------------------------------------------------------
+  # 4️⃣ Extract daily rainfall (LONG)
+  # ---------------------------------------------------------------------------
+  daily_long <- map2_dfr(files_year, dates, process_file)
+  
+  # ---------------------------------------------------------------------------
+  # 5️⃣ Convert to WIDE format
+  # ---------------------------------------------------------------------------
+  daily_wide <- daily_long %>%
+    mutate(date = paste0("ppt_", format(date, "%Y_%m_%d"))) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = rainfall_mm
+    )
+  
+  # ---------------------------------------------------------------------------
+  # 6️⃣ Save WIDE output
+  # ---------------------------------------------------------------------------
+  out_file <- file.path(out_dir, paste0("rainfall_daily_wide_", yr, ".csv"))
+  write_csv(daily_wide, out_file)
+  
+  message("Finished year: ", yr, " → ", out_file)
+}
