@@ -1,0 +1,54 @@
+setwd("C:\\Zvitambo\\users\\Tichaona Mapangisana\\Desktop\\Hop_sum_asign\\original_data")
+library(haven)
+df <- read_dta("241104 HOPE SAM LTFU_full dataset.dta")
+View(df)
+
+
+# List of variable names (no df$ prefix needed)
+variable_names <- c("q09_01", "q09_02", "q09_03", "q09_04", "q09_05", 
+                    "q09_06", "q09_07", "q09_08", "q09_09", "q09_10", 
+                    "q09_11", "q09_12", "q09_13", "q09_14", "q09_15", 
+                    "q09_16", "q09_17", "q09_18", "q09_19")
+vn = c("q09_01", "q09_02", "q09_04", "q09_05", 
+       "q09_06", "q09_07", "q09_08", "q09_09", "q09_10", 
+       "q09_11", "q09_12", "q09_13", "q09_14", "q09_15", 
+       "q09_16", "q09_17", "q09_18", "q09_19")
+
+# Subset the data frame
+df_2 <- df[, variable_names]
+df_3 = df[, vn]
+
+summary(df_2)
+summary(df_3)
+# Replace NULL with NA and convert variables to numeric
+df_2[] <- lapply(df_2, function(column) {
+  # Replace NULL with NA
+  column <- lapply(column, function(x) if (is.null(x)) NA else x)
+  
+  # Unlist the column (important if it's a list) and convert to numeric
+  as.numeric(unlist(column))
+})
+
+head(df_2)
+
+table(df_2$q09_19)
+mean(df_2$q09_01, na.rm = TRUE)
+
+install.packages("psych")      # For polychoric correlation and factor analysis
+install.packages("corpcor")    # For factor analysis with polychoric correlations
+library(psych)
+library(corpcor)
+
+# Assume df_2 contains the Likert scale data
+# Example: compute polychoric correlations for df_2
+polychoric_matrix <- polychoric(df_2)$rho
+poly_matrix <- polychoric(df_3)$rho
+# Compute the polychoric correlation matrix
+polychoric_matrix <- polychoric(df_2)$rho
+
+factor(df_2)
+rotate(verimax)
+str(df_2)
+
+summary(df_2)
+
