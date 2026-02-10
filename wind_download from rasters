@@ -1,0 +1,114 @@
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+#------------------------------------------------------------
+# Directories
+#------------------------------------------------------------
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/CCN_2/Weather_data/wind/10m wind speed"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/WEATHER_DATA_NEW/geo"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/WEATHER_DATA_NEW/va"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+#------------------------------------------------------------
+# Years
+#------------------------------------------------------------
+years <- 2019:2023
+
+#------------------------------------------------------------
+# NetCDF files
+#------------------------------------------------------------
+nc_files <- list.files(data_dir, pattern = "\\.nc$", full.names = TRUE)
+stopifnot(length(nc_files) > 0)
+
+#------------------------------------------------------------
+# Loop over years
+#------------------------------------------------------------
+for (yr in years) {
+  
+  message("Processing wind speed year: ", yr)
+  
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  if (!file.exists(geo_file)) {
+    message("Missing geo file: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  #----------------------------------------------------------
+  # Extract raster values using raster time
+  #----------------------------------------------------------
+  yearly_data <- map_dfr(nc_files, function(f) {
+    
+    tryCatch({
+      
+      r <- rast(f)
+      
+      dates <- as.Date(terra::time(r))
+      if (all(is.na(dates))) return(NULL)
+      
+      keep <- year(dates) == yr
+      if (!any(keep)) return(NULL)
+      
+      r <- r[[keep]]
+      dates <- dates[keep]
+      
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      map_dfr(seq_along(dates), function(i) {
+        points %>%
+          mutate(
+            date = dates[i],
+            wind_speed = vals[[i]]
+          )
+      })
+      
+    }, error = function(e) NULL)
+    
+  })
+  
+  if (nrow(yearly_data) == 0) {
+    message("No wind data found for ", yr)
+    next
+  }
+  
+  #----------------------------------------------------------
+  # Aggregate to daily mean (hourly → daily)
+  #----------------------------------------------------------
+  daily_data <- yearly_data %>%
+    mutate(date = as.Date(date)) %>%
+    group_by(across(-wind_speed)) %>%
+    summarise(
+      wind_speed = mean(wind_speed, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  #----------------------------------------------------------
+  # Wide format (one column per day)
+  #----------------------------------------------------------
+  id_cols <- setdiff(names(points), "wind_speed")
+  
+  output_wide <- daily_data %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = wind_speed
+    )
+  
+  #----------------------------------------------------------
+  # Save
+  #----------------------------------------------------------
+  out_file <- file.path(out_dir, paste0("wind_speed_", yr, "_daily.csv"))
+  write_csv(output_wide, out_file)
+  
+  message("Finished wind speed year ", yr)
+}
+
+message("✅ Wind speed extraction complete")
