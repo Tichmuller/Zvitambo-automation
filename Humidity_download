@@ -1,0 +1,119 @@
+library(terra)
+library(readr)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyr)
+
+#------------------------------------------------------------
+# Directories
+#------------------------------------------------------------
+data_dir <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/CCN_2/Weather_data/humidity/2m relative humidity"
+geo_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/WEATHER_DATA_NEW/geo"
+out_dir  <- "C:/Zvitambo/users/Tichaona Mapangisana/Desktop/WEATHER_DATA_NEW/rh"
+
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+
+#------------------------------------------------------------
+# Years to extract
+#------------------------------------------------------------
+years <- 2019:2023
+
+#------------------------------------------------------------
+# Load all NetCDF files once
+#------------------------------------------------------------
+nc_files <- list.files(data_dir, pattern = "\\.nc$", full.names = TRUE)
+
+stopifnot(length(nc_files) > 0)
+
+#------------------------------------------------------------
+# Loop over years
+#------------------------------------------------------------
+for (yr in years) {
+  
+  message("Processing year: ", yr)
+  
+  geo_file <- file.path(geo_dir, paste0("geo_", yr, "_rla.csv"))
+  if (!file.exists(geo_file)) {
+    message("Missing geo file: ", geo_file)
+    next
+  }
+  
+  points <- read_csv(geo_file, show_col_types = FALSE)
+  pts <- vect(points, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+  
+  #----------------------------------------------------------
+  # Extract from ALL raster files
+  #----------------------------------------------------------
+  yearly_data <- map_dfr(nc_files, function(f) {
+    
+    tryCatch({
+      
+      r <- rast(f)
+      
+      # ---- THE CRITICAL LINE ----
+      dates <- as.Date(terra::time(r))
+      
+      if (all(is.na(dates))) return(NULL)
+      
+      # Keep only this year
+      keep <- year(dates) == yr
+      if (!any(keep)) return(NULL)
+      
+      r <- r[[keep]]
+      dates <- dates[keep]
+      
+      vals <- terra::extract(r, pts)[, -1, drop = FALSE]
+      
+      map_dfr(seq_along(dates), function(i) {
+        points %>%
+          mutate(
+            date = dates[i],
+            relative_humidity = vals[[i]]
+          )
+      })
+      
+    }, error = function(e) NULL)
+    
+  })
+  
+  if (nrow(yearly_data) == 0) {
+    message("No data found for ", yr)
+    next
+  }
+  
+  #----------------------------------------------------------
+  # If hourly → aggregate to daily
+  #----------------------------------------------------------
+  daily_data <- yearly_data %>%
+    mutate(date = as.Date(date)) %>%
+    group_by(across(-relative_humidity)) %>%
+    summarise(
+      relative_humidity = mean(relative_humidity, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  #----------------------------------------------------------
+  # Wide format
+  #----------------------------------------------------------
+  id_cols <- setdiff(names(points), "relative_humidity")
+  
+  output_wide <- daily_data %>%
+    mutate(date = as.character(date)) %>%
+    pivot_wider(
+      id_cols = all_of(id_cols),
+      names_from = date,
+      values_from = relative_humidity
+    )
+  
+  #----------------------------------------------------------
+  # Save
+  #----------------------------------------------------------
+  out_file <- file.path(out_dir, paste0("relative_humidity_", yr, "_daily.csv"))
+  write_csv(output_wide, out_file)
+  
+  message("Finished year ", yr)
+}
+
+message("✅ Raster-based extraction complete")
+H
