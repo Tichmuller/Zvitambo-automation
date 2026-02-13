@@ -1,0 +1,108 @@
+import pandas as pd
+import numpy as np
+
+# -------------------------
+# Load child dataset
+# -------------------------
+df = pd.read_csv("bp_data.csv")
+
+# Clean child dataset
+df.columns = df.columns.str.strip()
+df['finalgender'] = df['finalgender'].astype(str).str.strip().str.lower()
+
+# -------------------------
+# Load BP tables
+# -------------------------
+boys1 = pd.read_csv("child_bp_1.csv")
+boys2 = pd.read_csv("child_bp_2.csv")
+girls1 = pd.read_csv("child_bp_3.csv")
+girls2 = pd.read_csv("child_bp_4.csv")
+
+boys_bp = pd.concat([boys1, boys2], ignore_index=True)
+girls_bp = pd.concat([girls1, girls2], ignore_index=True)
+
+# -------------------------
+# Clean BP tables
+# -------------------------
+for table in [boys_bp, girls_bp]:
+    table.columns = table.columns.str.strip()
+    table['BP percentile'] = table['BP percentile'].astype(str).str.strip()
+    table['Age(year)'] = pd.to_numeric(table['Age(year)'], errors='coerce')
+
+# -------------------------
+# Height percentile helper
+# -------------------------
+height_categories = [5, 10, 25, 50, 75, 90, 95]
+
+def closest_height_pct(x):
+    return min(height_categories, key=lambda y: abs(y - x))
+
+# -------------------------
+# Classification function
+# -------------------------
+def classify_bp(row):
+    
+    # Missing BP values
+    if pd.isna(row['medsys3yrfu']) or pd.isna(row['meddia3yrfu']):
+        return np.nan
+    
+    if pd.isna(row['height_pct_3yr']):
+        return np.nan
+    
+    # Select table by gender
+    if row['finalgender'] == "male":
+        table = boys_bp
+    elif row['finalgender'] == "female":
+        table = girls_bp
+    else:
+        return np.nan
+    
+    # Match closest available age
+    available_ages = table['Age(year)'].dropna().unique()
+    if len(available_ages) == 0:
+        return np.nan
+    
+    age = min(available_ages, key=lambda x: abs(x - row['age_yrs']))
+    
+    # Match closest height percentile
+    height_pct = closest_height_pct(row['height_pct_3yr'])
+    
+    # Filter 95th percentile row
+    ref = table[
+        (table['Age(year)'] == age) &
+        (table['BP percentile'] == '95th')
+    ]
+    
+    if ref.empty:
+        return np.nan
+    
+    col_sys = f"s_{height_pct}"
+    col_dia = f"d_{height_pct}"
+    
+    if col_sys not in table.columns or col_dia not in table.columns:
+        return np.nan
+    
+    s_95 = float(ref[col_sys].values[0])
+    d_95 = float(ref[col_dia].values[0])
+    
+    sys = float(row['medsys3yrfu'])
+    dia = float(row['meddia3yrfu'])
+    
+    # BP Positive if >= 95th percentile
+    if (sys >= s_95) or (dia >= d_95):
+        return "Yes"
+    else:
+        return "No"
+
+# -------------------------
+# Apply classification
+# -------------------------
+df['bp_positive'] = df.apply(classify_bp, axis=1)
+
+# -------------------------
+# Save output
+# -------------------------
+df.to_csv("children_with_bp_flag.csv", index=False)
+
+# Optional check
+print(df['bp_positive'].value_counts(dropna=False))
