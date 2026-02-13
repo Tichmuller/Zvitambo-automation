@@ -1,0 +1,120 @@
+library(dplyr)
+library(readr)
+library(stringr)
+
+# -------------------------
+# Load child dataset
+# -------------------------
+df <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/BP/bp_data.csv")
+
+# Clean child dataset
+colnames(df) <- str_trim(colnames(df))
+df$finalgender <- tolower(str_trim(as.character(df$finalgender)))
+
+# -------------------------
+# Load BP tables
+# -------------------------
+ 
+boys1 <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/BP/child_bp_1.csv")
+boys2 <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/BP/child_bp_2.csv")
+girls1 <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/BP/child_bp_3.csv")
+girls2 <- read_csv("C:/Zvitambo/users/Tichaona Mapangisana/Desktop/BP/child_bp_4.csv")
+
+
+boys_bp  <- bind_rows(boys1, boys2)
+girls_bp <- bind_rows(girls1, girls2)
+
+# -------------------------
+# Clean BP tables
+# -------------------------
+clean_table <- function(table) {
+  colnames(table) <- str_trim(colnames(table))
+  table$`BP percentile` <- str_trim(as.character(table$`BP percentile`))
+  table$`Age(year)` <- as.numeric(table$`Age(year)`)
+  return(table)
+}
+
+boys_bp  <- clean_table(boys_bp)
+girls_bp <- clean_table(girls_bp)
+
+# -------------------------
+# Height percentile helper
+# -------------------------
+height_categories <- c(5,10,25,50,75,90,95)
+
+closest_height_pct <- function(x) {
+  height_categories[which.min(abs(height_categories - x))]
+}
+
+# -------------------------
+# Classification function
+# -------------------------
+classify_bp <- function(row) {
+  
+  if (is.na(row["medsys3yrfu"]) || is.na(row["meddia3yrfu"])) {
+    return(NA)
+  }
+  
+  if (is.na(row["height_pct_3yr"])) {
+    return(NA)
+  }
+  
+  gender <- row["finalgender"]
+  
+  if (gender == "male") {
+    table <- boys_bp
+  } else if (gender == "female") {
+    table <- girls_bp
+  } else {
+    return(NA)
+  }
+  
+  # Match closest available age
+  available_ages <- na.omit(unique(table$`Age(year)`))
+  age <- available_ages[which.min(abs(available_ages - as.numeric(row["age_yrs"])))]
+  
+  # Closest height percentile
+  height_pct <- closest_height_pct(as.numeric(row["height_pct_3yr"]))
+  
+  # Filter 95th percentile row
+  ref <- table %>%
+    filter(`Age(year)` == age,
+           `BP percentile` == "95th")
+  
+  if (nrow(ref) == 0) {
+    return(NA)
+  }
+  
+  col_sys <- paste0("s_", height_pct)
+  col_dia <- paste0("d_", height_pct)
+  
+  if (!(col_sys %in% colnames(ref)) || !(col_dia %in% colnames(ref))) {
+    return(NA)
+  }
+  
+  s_95 <- as.numeric(ref[[col_sys]][1])
+  d_95 <- as.numeric(ref[[col_dia]][1])
+  
+  sys <- as.numeric(row["medsys3yrfu"])
+  dia <- as.numeric(row["meddia3yrfu"])
+  
+  if (sys >= s_95 || dia >= d_95) {
+    return("Yes")
+  } else {
+    return("No")
+  }
+}
+
+# -------------------------
+# Apply classification
+# -------------------------
+df$bp_positive <- apply(df, 1, classify_bp)
+
+# -------------------------
+# Save output
+# -------------------------
+write_csv(df, "children_with_bp_flag.csv")
+
+# Optional check
+table(df$bp_positive, useNA = "always")
+
